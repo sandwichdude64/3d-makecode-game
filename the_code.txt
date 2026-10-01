@@ -144,7 +144,7 @@ game.onUpdate(function () {
 
     for (let i = 0; i < flowers.length; ++i) {
         const flower = flowers[i]
-        if (!flower || flower.isDestroyed()) {
+        if (!flower) {
             flowers.splice(i, 1)
             i--
             continue
@@ -169,10 +169,7 @@ game.onUpdate(function () {
 })
 
 game.onPaint(function () {
-    screen.clear()
-
-    // sky
-    screen.fillRect(0, 0, 160, 90, 7)
+    screen.fill(7)
 
     // ground
     screen.fillRect(0, GROUND_Y, 160, 30, 2)
