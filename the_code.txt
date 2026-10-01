@@ -23,6 +23,7 @@ let energy = MAX_ENERGY
 let progress = 0
 let gameOver = false
 let butterfly: Sprite
+let goalMarker: Sprite
 let flowers: Sprite[] = []
 
 function createButterfly(): Sprite {
@@ -99,11 +100,19 @@ function resetWorld() {
     progress = 0
 
     for (const flower of flowers) {
-        if (flower) flower.destroy()
+        if (flower) {
+            flower.destroy()
+        }
     }
     flowers = []
 
-    if (butterfly) butterfly.destroy()
+    if (butterfly) {
+        butterfly.destroy()
+    }
+
+    if (goalMarker) {
+        goalMarker.destroy()
+    }
 
     butterfly = createButterfly()
 
@@ -118,18 +127,25 @@ function resetWorld() {
         createTree(x, 96)
     }
 
-    createGoalMarker()
+    goalMarker = createGoalMarker()
 }
 
 game.onUpdate(function () {
     if (gameOver) return
 
-    if (controller.left.isPressed()) butterfly.x -= 1.2
-    if (controller.right.isPressed()) butterfly.x += 1.2
-    if (controller.up.isPressed()) butterfly.y -= 1.2
-    if (controller.down.isPressed()) butterfly.y += 1.2
+    if (controller.left.isPressed()) {
+        butterfly.x -= 1.2
+    }
+    if (controller.right.isPressed()) {
+        butterfly.x += 1.2
+    }
+    if (controller.up.isPressed()) {
+        butterfly.y -= 1.2
+    }
+    if (controller.down.isPressed()) {
+        butterfly.y += 1.2
+    }
 
-    // gentle forward drift so the butterfly keeps moving toward Mexico
     butterfly.x += 0.4
 
     butterfly.y = Math.clamp(butterfly.y, 18, 90)
@@ -171,24 +187,20 @@ game.onUpdate(function () {
 game.onPaint(function () {
     screen.fill(7)
 
-    // ground
     screen.fillRect(0, GROUND_Y, 160, 30, 2)
     screen.fillRect(0, GROUND_Y + 2, 160, 4, 10)
 
-    // trees in the distance
     for (let i = 0; i < 7; ++i) {
         const x = 10 + i * 22
         screen.drawLine(x, GROUND_Y, x, GROUND_Y - 18, 3)
         screen.fillRect(x - 6, GROUND_Y - 18, 12, 10, 5)
     }
 
-    // progress bar
     screen.drawRect(15, 4, 130, 8, 1)
     screen.fillRect(15, 4, 130 * progress / 100, 8, 12)
     screen.print("USA", 18, 16, 15)
     screen.print("MEXICO", 107, 16, 15)
 
-    // HUD
     const energyText = "Energy: " + Math.round(energy)
     const nectarText = "Nectar: " + nectar
     screen.print(energyText, 4, 110, 15)
