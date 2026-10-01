@@ -1,0 +1,2204 @@
+/*************************************************
+Space Rocks Revenge
+
+Release notes
+
+v0.19:
+- enemy ship attack waves
+- shield and hull strength instead of lives
+
+v0.18:
+- restart work. Latest triangle.ts from carrier3d v0.18.9.1.
+- re-do controls based on ShipState, same code for player and AI ships
+- implement ship AI
+
+v0.17:
+- quaternion-based rotation
+
+v0.16:
+- fixed-color faces
+- work around dot product overflow in shader
+- shipInstance
+- palette 8Gray8Color
+*************************************************/
+
+// Prefix used for saving settings persistently
+const settingPrefix = "spacerocksrevenge_"
+
+// Enable the following code to analyze memory usage. Output
+// is printed to the JavaScript console. This is inefficient,
+// remember to disable it before sharing it.
+/*
+game.onUpdateInterval(5000, function () {
+    control.heapSnapshot()
+    console.log("FIXME, heap snapshot active, disable this before sharing")
+})
+*/
+
+// When making incompatible changes to the saved settings, call this one time
+// to reset the stored configuration.
+//settings.clear()
+
+class ShipModel extends MeshTreeModelBase {
+    static verticesFloat: number[][] = [
+        // nose
+        [1, 0, 10], // 0
+        [-1, 0, 10],
+        [-1, -1, 10], // 2
+        [1, -1, 10],
+
+        // front ridge
+        [4, 1, 3], // 4
+        [2, 3, 4],
+        [-2, 3, 4], // 6
+        [-4, 1, 3],
+        [-4, -1, 3], // 8
+        [-2, -2, 5],
+        [2, -2, 5], // 10
+        [4, -1, 3],
+
+        // rear ridge: front ridge w/ z -= 10, index += 8
+        [4, 1, -7], // 12
+        [2, 3, -6],
+        [-2, 3, -6], // 14
+        [-4, 1, -7],
+        [-4, -1, -7], // 16
+        [-2, -2, -5],
+        [2, -2, -5], // 18
+        [4, -1, -7],
+
+        // engines
+        [3, 1, -8], // 20
+        [-3, 1, -8],
+        [-3, -1, -8], // 22
+        [3, -1, -8],
+
+        // top wing
+        [0, 3, 0], // 24
+        [1, 3, -3],
+        [0, 3, -5], // 26
+        [-1, 3, -3],
+        [0, 7, -5], // 28
+        [0.5, 7, -6.5],
+        [0, 7, -8], // 30
+        [-0.5, 7, -6.5],
+
+        // top nacelle
+        [0.5, 7, -2], // 32
+        [0.25, 8, -4], 
+        [-0.25, 8, -4], // 34
+        [-0.5, 7, -2],
+        [0.5, 7, -10], // 36
+        [0.25, 8, -10], 
+        [-0.25, 8, -10], // 38
+        [-0.5, 7, -10],
+
+        // left nacelle
+        [8, -4, -2], // 40
+        [8, -3, -2], 
+        [7, -3, -2], // 42
+        [7, -4, -2],
+        [8, -4, -10], // 44
+        [8, -3, -10], 
+        [7, -3, -10], // 46
+        [7, -4, -10],
+
+        // right nacelle: translated (not mirrored) left nacelle
+        [-7, -4, -2], // 48
+        [-7, -3, -2], 
+        [-8, -3, -2], // 50
+        [-8, -4, -2],
+        [-7, -4, -10], // 52
+        [-7, -3, -10], 
+        [-8, -3, -10], // 54
+        [-8, -4, -10],
+
+        // left wing
+        [4, -1, 0], // 56
+        [4, -1, -6],
+        [4, 0, -3], // 58
+        [7, -3.5, -5],
+        [7, -3.5, -8], // 60
+        [7, -3, -6.5],
+
+        // right wing (X-reflected left wing, watch winding order)
+        [-4, -1, 0], // 62
+        [-4, -1, -6],
+        [-4, 0, -3], // 64
+        [-7, -3.5, -5],
+        [-7, -3.5, -8], // 66
+        [-7, -3, -6.5],
+    ]
+
+    // Triangle vertices for each face, in counterclockwise order 
+    // when viewed from the outside.
+    static bodyFaces = [
+        // nose
+        [0, 1, 2, 3],
+        [-2, 0, 4, 5],
+        [-2, 0, 5, 6, 1],
+        [-2, 1, 6, 7],
+        [1, 7, 8, 2],
+        [2, 8, 9],
+        [2, 9, 10, 3],
+        [3, 10, 11],
+        [3, 11, 4, 0],
+
+        // main body
+        [4, 12, 13, 5],
+        //[5, 13, 14, 6], // topSplitFace
+        [6, 14, 15, 7],
+        //[7, 15, 16, 8], // rightSplitFace
+        [8, 16, 17, 9],
+        [9, 17, 18, 10], // bottom
+        [10, 18, 19, 11],
+        //[11, 19, 12, 4], // leftSplitFace
+
+        // tail
+        [20, 13, 12],
+        [20, 21, 14, 13],
+        [21, 15, 14],
+        [21, 22, 16, 15],
+        [22, 17, 16],
+        [22, 23, 18, 17],
+        [23, 19, 18],
+        [23, 20, 12, 19],
+        [-14*4, 20, 23, 22, 21],
+    ]
+    static bodyTopSplitFace = [5, 13, 14, 6]
+    static bodyLeftSplitFace = [11, 19, 12, 4]
+    static bodyRightSplitFace = [7, 15, 16, 8]
+
+    static topWingFaces = [
+        // top wing
+        [24, 25, 29, 28],
+        [25, 26, 30, 29],
+        [26, 27, 31, 30],
+        [27, 24, 28, 31],
+    ]
+
+    static topNacelleFaces = [
+        // top nacelle
+        [32, 33, 34, 35], // front
+        [32, 36, 37, 33], // left
+        [33, 37, 38, 34], // top
+        [34, 38, 39, 35], // right
+        //[32, 35, 39, 36], // bottom
+        [-14*4, 36, 39, 38, 37], // back
+    ]
+    static topNacelleBottomSplitFace = [32, 35, 39, 36]
+
+    static leftNacelleFaces = [
+        // left nacelle
+        [-11*4, 40, 41, 42, 43], // front
+        [40, 44, 45, 41], // left
+        [41, 45, 46, 42], // top
+        //[42, 46, 47, 43], // right
+        [40, 43, 47, 44], // bottom
+        [-14*4, 44, 47, 46, 45], // back
+    ]
+    static leftNacelleRightSplitFace = [42, 46, 47, 43]
+
+    static rightNacelleFaces = [
+        // right nacelle
+        [-10*4, 48, 49, 50, 51], // front
+        //[48, 52, 53, 49], // left
+        [49, 53, 54, 50], // top
+        [50, 54, 55, 51], // right
+        [48, 51, 55, 52], // bottom
+        [-14*4, 52, 55, 54, 53], // back
+    ]
+    static rightNacelleLeftSplitFace = [48, 52, 53, 49]
+
+    static leftWingFaces = [
+        [56, 57, 60, 59],
+        [56, 59, 61, 58],
+        [58, 61, 60, 57],
+    ]
+    static rightWingFaces = [
+        [65, 66, 63, 62],
+        [64, 67, 65, 62],
+        [63, 66, 67, 64],
+    ]
+
+    constructor() {
+        super()
+        const verticesFloat = ShipModel.verticesFloat
+
+        const scale = 0.3
+        // Convert vertices to fixed point
+        const vertices = this.vertices
+
+        // TODO: move bounding sphere calc to parent
+        let maxDistSq = 0
+        for (let i = 0; i < verticesFloat.length; ++i) {
+            let vert = verticesFloat[i]
+            let vertInt = [Math.floor(vert[0] * scale * FP_ONE),
+                Math.floor(vert[1] * scale * FP_ONE),
+                Math.floor(vert[2] * scale * FP_ONE)]
+            vertices.push(vertInt)
+            maxDistSq = Math.max(maxDistSq, lenSq(vertInt as any as Fx8[]) as any as number)
+        }
+        //console.log('maxDistSq=' + maxDistSq + ' boundingSphereRadiusSquared=' + this.boundingSphereRadiusSquared)
+        this.boundingSphereRadiusSquared = maxDistSq
+        this.boundingSphereRadius = Math.floor(Math.sqrt(maxDistSq / FP_ONE) * FP_ONE)
+        //console.log('new boundingSphereRadiusSquared=' + this.boundingSphereRadiusSquared + ' boundingSphereRadius=' + this.boundingSphereRadius)
+
+        // TODO: this tree construction is a bit tedious. As an alternative, just supply the split planes
+        // in the order they should be applied, and build the tree automatically?
+
+        let topNacelle = new MeshTreeNode(this, ShipModel.topNacelleBottomSplitFace, ShipModel.topNacelleFaces)
+        let topWing = new MeshTreeNode(this, null, ShipModel.topWingFaces)
+        topNacelle.addOutside(topWing)
+
+        let leftNacelle = new MeshTreeNode(this, ShipModel.leftNacelleRightSplitFace, ShipModel.leftNacelleFaces)
+        let leftWing = new MeshTreeNode(this, null, ShipModel.leftWingFaces)
+        leftNacelle.addOutside(leftWing)
+
+        let rightWing = new MeshTreeNode(this, null, ShipModel.rightWingFaces)
+        let rightNacelle = new MeshTreeNode(this, ShipModel.rightNacelleLeftSplitFace, ShipModel.rightNacelleFaces)
+        rightNacelle.addOutside(rightWing)
+
+        let bodyMiddle = new MeshTreeNode(this, ShipModel.bodyTopSplitFace, ShipModel.bodyFaces)
+        bodyMiddle.addOutside(topNacelle)
+
+        let bodyLeft = new MeshTreeNode(this, ShipModel.bodyLeftSplitFace, null)
+        bodyLeft.addOutside(leftNacelle)
+        bodyLeft.addInside(bodyMiddle)
+
+        let bodyRight = new MeshTreeNode(this, ShipModel.bodyRightSplitFace, null)
+        bodyRight.addOutside(rightNacelle)
+        bodyRight.addInside(bodyLeft)
+
+        this.meshTree = bodyRight
+
+        this.calculateNormalVectorsFromFaces()
+    }
+}
+
+const perfRotate = simpleperf.getCounter("rotateModel")
+
+class ShipSpec {
+    rollRate: Fx8
+    pitchRate: Fx8
+    yawRate: Fx8
+    baseSpeed: Fx8
+    rollIncrement: Fx8
+    pitchIncrement: Fx8
+    yawIncrement: Fx8
+    rollDecay: Fx8
+    pitchDecay: Fx8
+    yawDecay: Fx8
+    hullStrength: number
+    shieldStrength: number
+
+    constructor(spec: {
+        rollRate: number, pitchRate: number, yawRate: number,
+        baseSpeed: number,
+        rollIncrement: number, yawIncrement: number, pitchIncrement: number,
+        rollDecay: number, pitchDecay: number, yawDecay: number,
+        hullStrength: number, shieldStrength: number
+    }) {
+        this.rollRate = Fx8(spec.rollRate)
+        this.pitchRate = Fx8(spec.pitchRate)
+        this.yawRate = Fx8(spec.yawRate)
+        this.baseSpeed = Fx8(spec.baseSpeed)
+        this.rollIncrement = Fx8(spec.rollIncrement)
+        this.pitchIncrement = Fx8(spec.pitchIncrement)
+        this.yawIncrement = Fx8(spec.yawIncrement)
+        this.rollDecay = Fx8(spec.rollDecay)
+        this.pitchDecay = Fx8(spec.pitchDecay)
+        this.yawDecay = Fx8(spec.yawDecay)
+        this.hullStrength = spec.hullStrength
+        this.shieldStrength = spec.shieldStrength
+    }
+}
+
+const aiShipSpecBasic = new ShipSpec({
+    rollRate: 1,
+    pitchRate: 1,
+    yawRate: 0,
+    baseSpeed: 0.125,
+    rollIncrement: 1 / 8,
+    pitchIncrement: 1 / 8,
+    yawIncrement: 1 / 8,
+    rollDecay: 1 / 16,
+    pitchDecay: 1 / 16,
+    yawDecay: 1 / 16,
+    hullStrength: 2,
+    shieldStrength: 3
+})
+
+const aiShipSpecHigh = new ShipSpec({
+    rollRate: 2,
+    pitchRate: 2,
+    yawRate: 0,
+    baseSpeed: 0.125,
+    rollIncrement: 1/8,
+    pitchIncrement: 1/8,
+    yawIncrement: 1/8,
+    rollDecay: 1/16,
+    pitchDecay: 1/16,
+    yawDecay: 1/16,
+    hullStrength: 3,
+    shieldStrength: 5})
+
+const playerShipSpec = new ShipSpec({
+    rollRate: 2,
+    pitchRate: 2,
+    yawRate: 1,
+    baseSpeed: 0.125,
+    rollIncrement: 1/8,
+    pitchIncrement: 1/8,
+    yawIncrement: 1,
+    rollDecay: 1/16,
+    pitchDecay: 1/16,
+    yawDecay: 1,
+    hullStrength: 5,
+    shieldStrength: 10})
+
+function dampen(value: Fx8, reduction: Fx8) : Fx8 {
+    const v = value as any as number
+    if (v == 0) return Fx.zeroFx8
+    const r = (reduction as any as number)
+    if (v > 0) {
+        return Math.max(0, v - r) as any as Fx8
+    } else {
+        return Math.min(0, v + r) as any as Fx8
+    }
+}
+
+/*
+function testDampen(value: number, reduction: number) {
+    console.log("testDampen(" + value + ", " + reduction + ") = " + Fx.toFloat(dampen(Fx8(value), Fx8(reduction))))
+}
+testDampen(0, 1/8)
+testDampen(0.25, 1/8)
+testDampen(0.75, 1/8)
+testDampen(1, 1/8)
+
+testDampen(0, 1/8)
+testDampen(-0.25, 1/8)
+testDampen(-0.75, 1/8)
+testDampen(-1, 1/8)
+*/
+
+function updateRate(oldValue: Fx8, change: Fx8) : Fx8 {
+    let newVal = Fx.add(oldValue, change)
+    if (Fx.compare(Fx.abs(oldValue), Fx.oneFx8) > 0) {
+        // Normally, controls are clamped, but if we're currently
+        // in a spin after a collision, don't do that.`
+        return newVal
+    }
+    if (Fx.compare(oldValue, Fx.zeroFx8) > 0) {
+        newVal = Fx.min(newVal, Fx.oneFx8)
+    } else {
+        newVal = Fx.max(newVal, Fx.neg(Fx.oneFx8))
+    }
+    return newVal
+}
+
+function calcFractionalRotation(amount: Fx8, leftover: Fx8, rate: Fx8) : Fx8[] {
+    //return [Fx.rightShift(Fx.mul(amount, rate), 8), Fx.zeroFx8]
+    let val = Fx.add(Fx.mul(amount, rate), leftover)
+    if (Fx.compare(val, Fx.zeroFx8) >= 0) {
+        const shiftedVal = Fx.rightShift(val, 8)
+        const newLeftover = Fx.sub(val, Fx.leftShift(shiftedVal, 8))
+        return [shiftedVal, newLeftover]
+    } else {
+        const shiftedVal = Fx.rightShift(Fx.neg(val), 8)
+        const newLeftover = Fx.sub(Fx.neg(val), Fx.leftShift(shiftedVal, 8))
+        return [Fx.neg(shiftedVal), Fx.neg(newLeftover)]
+    }
+}
+
+/*
+function debugFractionalRotation(amount: number, leftover: number, rate: number) {
+    const [newVal, newFrac] = calcFractionalRotation(Fx8(amount), Fx8(leftover), Fx8(rate))
+    console.log('amount=' + amount + ' leftover= ' + leftover + ' rate=' + rate + 
+        ' newVal=' + (Fx.toFloat(newVal)*256) + ' newFrac=' + Fx.toFloat(newFrac))
+}
+debugFractionalRotation(1/8, 0, 1)
+debugFractionalRotation(2.125, 0, 1)
+debugFractionalRotation(2.875, 0.25, 1)
+debugFractionalRotation(-2.875, 0, 1)
+debugFractionalRotation(-2.875, -0.25, 1)
+throw("quit")
+*/
+
+class ShipState {
+    spec: ShipSpec
+    position: Fx8[]
+    orientation: Fx8[]
+    velocity: Fx8[]
+    normalizationDelayCounter: number
+
+    roll: Fx8
+    pitch: Fx8
+    yaw: Fx8
+    rollFrac: Fx8
+    pitchFrac: Fx8
+    yawFrac: Fx8
+    throttle: Fx8
+
+    hull: number
+    shield: number
+    laserPower: number
+    firing: number
+    boostActive: number
+
+    constructor(spec: ShipSpec) {
+        this.spec = spec
+        this.position = [Fx.zeroFx8, Fx.zeroFx8, Fx.zeroFx8]
+        this.orientation = []
+        quat.setIdentity(this.orientation)
+        this.velocity = [Fx.zeroFx8, Fx.zeroFx8, Fx.zeroFx8]
+        this.normalizationDelayCounter = Math.randomRange(30, 60)
+        this.roll = Fx.zeroFx8
+        this.pitch = Fx.zeroFx8
+        this.yaw = Fx.zeroFx8
+        this.throttle = Fx.zeroFx8
+        this.rollFrac = Fx.zeroFx8
+        this.pitchFrac = Fx.zeroFx8
+        this.yawFrac = Fx.zeroFx8
+        this.hull = spec.hullStrength
+        this.shield = spec.shieldStrength
+        this.laserPower = laserPowerMax
+        // Start out with the laser acting as having just fired,
+        // to block it from firing right at game start. TODO:
+        // this doesn't work right, a low value doesn't prevent
+        // firing and a high value draws the laser.
+        this.firing = 3
+        this.boostActive = 0
+    }
+
+    getSpeed() : Fx8 {
+        // Boost runs for active + release time, and can be re-triggered
+        // during the release time.
+        if (this.boostActive > boostReleaseFrames) {
+            return Fx.imul(this.spec.baseSpeed, boostSpeedMultiplier + 1)
+        } else if (this.boostActive > 0) {
+            return Fx.mul(this.spec.baseSpeed, Fx8(1 + boostSpeedMultiplier * this.boostActive / boostReleaseFrames))
+        } else {
+            return this.spec.baseSpeed
+        }
+        //reticleSprite.say("speed=" + Fx.toFloat(speed))
+    }
+
+    applyControlsDecay(multiplier: Fx8) {
+        //console.logValue('roll', Fx.toFloat(this.roll))
+        this.roll = dampen(this.roll, Fx.mul(this.spec.rollDecay, multiplier))
+        this.pitch = dampen(this.pitch, Fx.mul(this.spec.pitchDecay, multiplier))
+        this.yaw = dampen(this.yaw, Fx.mul(this.spec.yawDecay, multiplier))
+
+        this.boostActive -= Fx.toInt(multiplier)
+        if (this.boostActive < 0) this.boostActive = 0
+    }
+
+    addRoll(amount: Fx8, multiplier: Fx8) {
+        const rate = Fx.mul(amount, multiplier)
+        this.roll = updateRate(this.roll, Fx.mul(rate, this.spec.rollIncrement))
+    }
+
+    addPitch(amount: Fx8, multiplier: Fx8) {
+        const rate = Fx.mul(amount, multiplier)
+        this.pitch = updateRate(this.pitch, Fx.mul(rate, this.spec.pitchIncrement))
+    }
+
+    addYaw(amount: Fx8, multiplier: Fx8) {
+        const rate = Fx.mul(amount, multiplier)
+        this.yaw = updateRate(this.yaw, Fx.mul(rate, this.spec.yawIncrement))
+    }
+
+    setWorldFromModelRotation(worldFromModel: Fx8[]) {
+        if (--this.normalizationDelayCounter <= 0) {
+            quat.normalizeSlowly(this.orientation)
+            this.normalizationDelayCounter = Math.randomRange(30, 60)
+        }
+        quat.setMat33(worldFromModel, this.orientation)
+    }
+
+    setWorldFromModelPosition(worldFromModel: Fx8[]) {
+        worldFromModel[9] = this.position[0]
+        worldFromModel[10] = this.position[1]
+        worldFromModel[11] = this.position[2]
+    }
+
+    applyControls(worldFromModel: Fx8[], setPosition: boolean) {
+        this.setWorldFromModelRotation(worldFromModel)
+
+        const [roll, rollFrac] = calcFractionalRotation(
+            this.roll, this.rollFrac, this.spec.rollRate)
+        this.rollFrac = rollFrac
+        const [pitch, pitchFrac] = calcFractionalRotation(
+            this.pitch, this.pitchFrac, this.spec.pitchRate)
+        this.pitchFrac = pitchFrac
+        const [yaw, yawFrac] = calcFractionalRotation(
+            this.yaw, this.yawFrac, this.spec.yawRate)
+        this.yawFrac = yawFrac
+        //console.logValue('yaw=', yaw)
+        //console.logValue('yawFrac=', yawFrac)
+        quat.rotateZ(this.orientation, roll)
+        quat.rotateX(this.orientation, pitch)
+        quat.rotateY(this.orientation, yaw)
+
+        this.setWorldFromModelRotation(worldFromModel as any[] as Fx8[])
+        //console.logValue('ux', worldFromModel[6])
+        //console.logValue('uy', worldFromModel[7])
+        //console.logValue('uz', worldFromModel[8])
+
+        const speed = this.getSpeed()
+
+        this.velocity[0] = Fx.mul(worldFromModel[6] as any as Fx8, speed)
+        this.velocity[1] = Fx.mul(worldFromModel[7] as any as Fx8, speed)
+        this.velocity[2] = Fx.mul(worldFromModel[8] as any as Fx8, speed)
+
+        if (setPosition) this.setWorldFromModelPosition(worldFromModel)
+    }
+
+    updatePosition(multiplier: Fx8, originMove: Fx8[], isSetupScreen: boolean) {
+        // If the game is paused, let objects rotate but stop them from moving.
+        if (isSetupScreen) return
+
+        //console.log("originMove=" + Fx.toFloat(originMove[0]) + ", " + Fx.toFloat(originMove[1]) + ", " + Fx.toFloat(originMove[2]))
+        this.position[0] = Fx.add(this.position[0], Fx.sub(Fx.mul(this.velocity[0], multiplier), originMove[0]))
+        this.position[1] = Fx.add(this.position[1], Fx.sub(Fx.mul(this.velocity[1], multiplier), originMove[1]))
+        this.position[2] = Fx.add(this.position[2], Fx.sub(Fx.mul(this.velocity[2], multiplier), originMove[2]))
+    }
+
+    updateCapacitors(multiplierFx8: Fx8) {
+        const multiplier = Fx.toInt(multiplierFx8)
+        if (this.firing) {
+            this.firing -= multiplier
+            if (this.firing < 0) this.firing = 0
+        } else {
+            this.laserPower = Math.min(laserPowerMax, this.laserPower + multiplier)
+        }
+    }
+}
+
+function debug_matToString(mat: number[]) {
+    let padStart = (str: string, len: number, char: string) => {
+        let out = str
+        while (out.length < len) out = char + out
+        return out
+    };
+    let out = "["
+    for (let j = 0; j < 3; ++j) {
+        for (let i = 0; i < 4; ++i) {
+            const idx = j + i * 3
+            out += padStart('' + idx, 2, '░') + ': ' + padStart('' + mat[idx], 5, '░') + ' '
+        }
+        out += (j == 2 ? "]" : "\n░")
+    }
+    return out
+}
+
+interface AiAction {
+    pitch: Fx8,
+    roll: Fx8,
+    yaw: Fx8,
+    boost: boolean
+}
+
+function shipAiDodger(state: ShipState, viewerInModel: number[], modelInViewer: number[]) : AiAction {
+    let pitch = Fx.zeroFx8
+    let roll = Fx.zeroFx8
+    let yaw = Fx.zeroFx8
+    let boost = false
+
+    //console.log("viewer at [" + viewerInModel.join(", ") + "] roll=" + roll + " pitch=" + pitch)
+    const distSq = Fx.toInt(lenSq([modelInViewer[9], modelInViewer[10], modelInViewer[11]] as any as Fx8[]))
+
+    let px = viewerInModel[9]
+    let py = viewerInModel[10]
+    let pz = viewerInModel[11]
+
+    if (pz < 0) {
+        // player ship is behind me, pitch only
+        pitch = py > 0 ? Fx.neg(Fx.oneFx8) : Fx.oneFx8
+    } else {
+        if (distSq < 512) {
+            // Dodge the player ship by aiming at a point off to the side
+            px *= -256
+            py *= -256
+            // Is the player ship facing the AI ship?
+            if (waveConfig.difficulty > 0 && modelInViewer[11] < 0) {
+                if (Math.percentChance(5)) boost = true
+            }
+        }
+
+        if (px > 16) roll = Fx.neg(Fx.oneFx8)
+        if (px < -16) roll = Fx.oneFx8
+        if (py > 4) pitch = Fx.neg(Fx.oneFx8)
+        if (py < -4) pitch = Fx.oneFx8
+    }
+
+    //reticleSprite.say('' + Fx.toInt(roll) + ' ' + Fx.toInt(pitch) + ' ' + Fx.toInt(speed) + ' d=' + distSq)
+
+    //console.log(debug_matToString(viewerInModel) + ' distSq=' + distSq + ' roll=' + (roll as any as number) + ' pitch=' + (pitch as any as number))
+
+    return {pitch, roll, yaw, boost}
+}
+
+function shipAiStraight(state: ShipState, viewerInModel: number[], modelInViewer: number[]) : AiAction {
+    let pitch = Fx8(-0.5)
+    let roll = Fx8(0.6)
+    let yaw = Fx.zeroFx8
+    let boost = false
+
+    // If the player is too far away, try to fly closer.
+    const distSq = Fx.toInt(lenSq([modelInViewer[9], modelInViewer[10], modelInViewer[11]] as any as Fx8[]))
+    if (distSq > 2048) {
+        let py = viewerInModel[10]
+        pitch = py > 0 ? Fx.neg(Fx.oneFx8) : Fx.oneFx8
+    }
+
+    return { pitch, roll, yaw, boost }
+}
+
+function shipAiSpin(state: ShipState, viewerInModel: number[], modelInViewer: number[]): AiAction {
+    let pitch = Fx8(0.7)
+    let roll = Fx8(0.6681)
+    let yaw = Fx8(0.141)
+    let boost = false
+    return { pitch, roll, yaw, boost }
+}
+
+interface WaveConfig {
+    ai: Function,
+    shipSpec: ShipSpec,
+    difficulty: number,
+    shipCount: number,
+    asteroidCount: number
+}
+
+function getWaveConfig(wave: number) : WaveConfig {
+    if (wave == 1) {
+        return { ai: shipAiStraight, shipSpec: aiShipSpecBasic, difficulty: 0, shipCount: 1, asteroidCount: 0 }
+    }
+    if (wave == 2) {
+        return { ai: shipAiDodger, shipSpec: aiShipSpecBasic, difficulty: 0, shipCount: 1, asteroidCount: 0 }
+    }
+    if (wave == 3) {
+        return { ai: shipAiDodger, shipSpec: aiShipSpecBasic, difficulty: 0, shipCount: 2, asteroidCount: 0 }
+    }
+    if (wave == 4) {
+        return { ai: shipAiDodger, shipSpec: aiShipSpecHigh, difficulty: 0, shipCount: 1, asteroidCount: 0 }
+    }
+    if (wave == 5) {
+        return { ai: shipAiDodger, shipSpec: aiShipSpecHigh, difficulty: 1, shipCount: 1, asteroidCount: 0 }
+    }
+    if (wave == 6) {
+        return { ai: shipAiDodger, shipSpec: playerShipSpec, difficulty: 1, shipCount: 1, asteroidCount: 0 }
+    }
+    // wave >= 7
+    let config = { ai: shipAiDodger, shipSpec: aiShipSpecBasic, difficulty: 1, shipCount: 1, asteroidCount: 0 }
+    config.shipCount = Math.max(1, wave - 5)
+    config.asteroidCount = Math.max(0, 2 * (wave - 5))
+    return config
+}
+
+let waveConfig: WaveConfig = getWaveConfig(0)
+
+class ShipInstance extends InstanceBase {
+    state: ShipState
+    instanceNum: number
+
+    constructor(spec: ShipSpec, instance: number) {
+        super()
+
+        this.state = new ShipState(spec)
+        this.instanceNum = instance
+    }
+
+    updateWorldFromModel(multiplier: Fx8, originMove: Fx8[], isSetupScreen: boolean) {
+        //return
+        this.state.applyControlsDecay(multiplier)
+
+        const viewerInModel: number[] = []
+        setInverseTransformFP(viewerInModel as any as Fx8[], this.viewerFromModel as any as Fx8[])
+
+        const action = isSetupScreen ?
+            shipAiSpin(this.state, viewerInModel, this.viewerFromModel) :
+            waveConfig.ai(this.state, viewerInModel, this.viewerFromModel)
+
+        this.state.addRoll(action.roll, multiplier)
+        this.state.addPitch(action.pitch, multiplier)
+        this.state.addYaw(action.yaw, multiplier)
+
+        if (action.boost) {
+            applyBoost(this.state, false)
+        }
+
+        this.state.applyControls(this.worldFromModel as any[] as Fx8[], true)
+        this.state.updatePosition(multiplier, originMove, isSetupScreen)
+
+        // Fire laser if the player ship is lined up correctly.
+        // Don't do that on the setup screen, and the wave 1 ship is unarmed.
+        if (!isSetupScreen && waveNum > 1) {
+            const vx = viewerInModel[9]
+            const vy = viewerInModel[10]
+            const vz = viewerInModel[11]
+            //console.logValue("vx", vx)
+            //console.logValue("vy", vy)
+            if (vz > 0 && Math.abs(vx) < FP_ONE && Math.abs(vy) < FP_ONE) {
+                shootLaser(this.state, false)
+            }
+        }
+
+        this.state.updateCapacitors(multiplier)
+    }
+}
+
+class AsteroidInstance extends InstanceBase {
+    initialRotation: number[]
+    velocity: Fx8[]
+    angle: Fx8
+    angularVelocity: Fx8
+    worldSize: number
+
+    constructor(wave: number, instance: number, worldSize: number) {
+        super()
+
+        // Save the world size for movement updates. If it changes, asteroids
+        // need to be regenerated.
+        this.worldSize = worldSize
+
+        // Set up a random initial rotation axis
+        this.initialRotation = []
+        mat_setIdentity_FP(this.initialRotation)
+        rotateX_mat33_FP(this.initialRotation, Fx8(Math.random() * 2))
+        rotateY_mat33_FP(this.initialRotation, Fx8(Math.random() * 2))
+        rotateZ_mat33_FP(this.initialRotation, Fx8(Math.random() * 2))
+
+        // Initial velocity and angular velocity
+        this.velocity = [Fx.zeroFx8, Fx.zeroFx8, Fx.zeroFx8]
+        if (wave > 1) {
+            const alpha = Math.random() * Math.PI * 2
+            const beta = Math.acos(Math.random() * 2 - 1)
+            const speed = Math.random() * (wave - 1) / 2 + 0.3
+            this.velocity[0] = Fx8(Math.cos(alpha) * Math.cos(beta) * speed / 20)
+            this.velocity[1] = Fx8(Math.sin(alpha) * Math.cos(beta) * speed / 20)
+            this.velocity[2] = Fx8(Math.sin(beta) * speed / 20)
+        }
+
+        this.angle = Fx.zeroFx8
+        this.angularVelocity = Fx8((Math.random() + 0.1) * 2 / 100)
+
+        if (wave > 1) {
+            // Randomly place new asteroids, but not too close to the player or to the edge.
+            const distRange = worldSize * FP_ONE
+            const randSign = () => Math.random() > 0.5 ? 1 : -1
+            const minDistanceSquared = 100 << FP_BITS_SQ
+            const maxDistanceSquared = Math.imul(worldSize, worldSize) << FP_BITS_SQ
+            while (true) {
+                const x = Math.floor(randSign() * (Math.random() * distRange))
+                const y = Math.floor(randSign() * (Math.random() * distRange))
+                const z = Math.floor(randSign() * (Math.random() * distRange))
+                const r = Math.imul(x, x) + Math.imul(y, y) + Math.imul(z, z)
+                if (x * x + y * y + z * z < minDistanceSquared) continue
+                if (x * x + y * y + z * z >= maxDistanceSquared) continue
+                this.worldFromModel[9] = x
+                this.worldFromModel[10] = y
+                this.worldFromModel[11] = z
+                break
+            }
+        } else {
+            // First wave has non-moving asteroids at fixed positions.
+            const offset = (instance + (instance & 1 ? 0.5 : 0)) * Math.PI * 2 / 3
+            this.worldFromModel[9] = Math.floor((Math.cos(offset) * 10) * FP_ONE)
+            this.worldFromModel[10] = Math.floor(((instance & 1 ? 5 : -5)) * FP_ONE)
+            this.worldFromModel[11] = Math.floor((Math.sin(offset) * 10 - 17) * FP_ONE)
+        }
+    }
+    
+    updateWorldFromModel(multiplier: Fx8, shipMove: Fx8[], isSetupScreen: boolean) {
+        perfRotate.start()
+        this.angle = Fx.add(this.angle, Fx.mul(this.angularVelocity, multiplier))
+        mul_mat33_rotateX_partial_FP(this.worldFromModel as any as number[], this.initialRotation as any as number[], this.angle)
+        perfRotate.end()
+
+        // If the game is paused, let asteroids rotate but stop them from moving.
+        if (isSetupScreen) return
+
+        const oldX = this.getPosX()
+        const oldY = this.getPosY()
+        const oldZ = this.getPosZ()
+        this.setPosX(Fx.add(this.getPosX(), Fx.sub(Fx.mul(this.velocity[0], multiplier), shipMove[0])))
+        this.setPosY(Fx.add(this.getPosY(), Fx.sub(Fx.mul(this.velocity[1], multiplier), shipMove[1])))
+        this.setPosZ(Fx.add(this.getPosZ(), Fx.sub(Fx.mul(this.velocity[2], multiplier), shipMove[2])))
+
+        /*
+        // The playing area is a large sphere centered around the player ship.
+        // If rocks exit it, make them reappear from the opposite side. The
+        // new point isn't guaranteed to be inside the sphere, for example if it
+        // is nearly grazing the surface, but that's OK since rocks near the
+        // surface are dimmed.
+
+        const x = this.getX()
+        const y = this.getY()
+        const z = this.getZ()
+
+        const limit = Math.imul(this.worldSize, this.worldSize) << FP_BITS_SQ
+        //console.log("limit=" + limit + " worldSize=" + this.worldSize)
+        if (Math.imul(x, x) + Math.imul(y, y) + Math.imul(z, z) > limit) {
+            this.setPosX(Fx.neg(oldX))
+            this.setPosY(Fx.neg(oldY))
+            this.setPosZ(Fx.neg(oldZ))
+        }
+        */
+    }
+}
+
+// The "Spray" particle effect doesn't have a configurable color,
+// resulting in near-invisible particles. This is a copy with a modified
+// color value. Source:
+// https://github.com/microsoft/pxt-common-packages/blob/master/libs/game/particlefactories.ts#L94
+class ExplodeFactory extends particles.SprayFactory {
+    galois: Math.FastRandom
+
+    constructor(speed: number, centerDegrees: number, arcDegrees: number) {
+        super(speed, centerDegrees, arcDegrees)
+        this.galois = new Math.FastRandom();
+    }
+    createParticle(anchor: particles.ParticleAnchor) {
+        const p = super.createParticle(anchor)
+        p.color = this.galois.percentChance(50) ? 11 : 14
+        if (true) { // this.galois.percentChance(50)) {
+            p.vx = Fx.rightShift(Fx.imul(p.vx, this.galois.randomRange(16, 255)), 8)
+            p.vy = Fx.rightShift(Fx.imul(p.vy, this.galois.randomRange(16, 255)), 8)
+        }
+        /*
+        if (this.galois.percentChance(10)) {
+            p.vx = Fx.rightShift(p.vx, 1)
+            p.vy = Fx.rightShift(p.vy, 1)
+        }
+        */
+        return p
+    }
+    drawParticle(particle: particles.Particle, x: Fx8, y: Fx8) {
+        screen.setPixel(Fx.toInt(x), Fx.toInt(y), particle.color);
+    }
+}
+const particleExplode = new effects.ParticleEffect(400, 100, function (anchor: particles.ParticleAnchor, particlesPerSecond: number) {
+    const factory = new ExplodeFactory(200, 0, 359)
+    const src = new particles.ParticleSource(anchor, particlesPerSecond, factory);
+    src.setAcceleration(0, 0);
+    return src;
+});
+
+const perfRadar = simpleperf.getCounter("radar")
+
+// A radar viewer similar to that in the game Elite. This essentially shrinks
+// the xyz coordinates of the asteroids into a small box, places that box in
+// viewer space where the radar image should appear, and applies the camera's
+// perspective transform to the resulting positions.
+class Radar {
+    drawFrame: Function
+    draw: Function
+
+    pos: number[]
+
+    constructor(camera: Camera3d) {
+        const yoffset = -Math.floor(camera.upTan * 0.9 * FP_ONE)
+        const zoffset = -Math.floor(1.2 * FP_ONE)
+        const xsize = Math.floor(camera.rightTan / 2 * FP_ONE)
+        const ysize = Math.floor(camera.upTan / 2 * FP_ONE)
+        const zsize = Math.floor(xsize * 0.5)
+
+        const pc = [0, yoffset, zoffset]
+        const p00 = [-xsize, yoffset, zoffset + zsize]
+        const p01 = [-xsize, yoffset, zoffset - zsize]
+        const p10 = [xsize, yoffset, zoffset + zsize]
+        const p11 = [xsize, yoffset, zoffset - zsize]
+        camera.perspectiveTransform(pc)
+        camera.perspectiveTransform(p00)
+        camera.perspectiveTransform(p01)
+        camera.perspectiveTransform(p10)
+        camera.perspectiveTransform(p11)
+
+        this.drawFrame = function(img: Image, dx: number, dy: number) {
+            img.drawLine(p00[0] + dx, p00[1] + dy, p01[0] + dx, p01[1] + dy, 3)
+            img.drawLine(p01[0] + dx, p01[1] + dy, p11[0] + dx, p11[1] + dy, 3)
+            img.drawLine(p11[0] + dx, p11[1] + dy, p10[0] + dx, p10[1] + dy, 3)
+            img.drawLine(p10[0] + dx, p10[1] + dy, p00[0] + dx, p00[1] + dy, 3)
+            img.drawLine(pc[0] + dx, pc[1] + dy, p01[0] + dx, p01[1] + dy, 2)
+            img.drawLine(pc[0] + dx, pc[1] + dy, p11[0] + dx, p11[1] + dy, 2)
+        }
+
+        const pos = [0, 0, 0]
+
+        this.draw = function(img: Image, sceneCamera: scene.Camera, asteroids: AsteroidInstance[], worldSize: number, isSetupScreen: boolean, useCockpit: boolean) {
+            if (isSetupScreen) return
+
+            perfRadar.start()
+            // Factor to downsize the regular world to the radar box
+            const rscale = Math.floor(FP_ONE / worldSize)
+            let shakeX = -sceneCamera.drawOffsetX
+            let shakeY = -sceneCamera.drawOffsetY
+            if (!useCockpit) {
+                this.drawFrame(img, shakeX, shakeY)
+            }
+            const drawObject = function(instance: InstanceBase, col: number) {
+                const ax = instance.getX()
+                const ay = instance.getY()
+                const az = instance.getZ()
+                pos[0] = Math.imul(ax, rscale) >> FP_BITS
+                pos[1] = (Math.imul(ay, rscale) >> FP_BITS) + yoffset
+                pos[2] = (Math.imul(az, rscale) >> FP_BITS) + zoffset
+                pos[0] = Math.clamp(-xsize, xsize, pos[0])
+                pos[1] = Math.clamp(yoffset - ysize, yoffset + ysize, pos[1])
+                pos[2] = Math.clamp(zoffset - zsize, zoffset + zsize, pos[2])
+                camera.perspectiveTransform(pos)
+                const x = pos[0]
+                const y1 = pos[1]
+                pos[1] = yoffset
+                camera.perspectiveTransform(pos)
+                const y0 = pos[1]
+
+                img.drawRect(x + shakeX, y0 + shakeY, 1, y1 - y0, 7)
+                img.fillRect(x + shakeX - 1, y1 + shakeY - 2, 3, 3, col)
+            }
+            for (let i = 0; i < asteroids.length; ++i) {
+                drawObject(asteroids[i], 12)
+            }                
+            for (let i = 0; i < enemyShipInstances.length; ++i) {
+                drawObject(enemyShipInstances[i], 11)
+            }
+            perfRadar.end()
+        }
+    }
+}
+
+const perfStarfield = simpleperf.getCounter("starfield")
+
+class Starfield {
+    starX: Fx8[]
+    starY: Fx8[]
+    starColor: number[]
+    numStars: number
+
+    starAngle: number
+    starCos: number
+    starSin: number
+    starX0: number
+    starY0: number
+    diagonalHalfFovDegrees: number
+    radiansToShift: number
+
+    constructor(camera: Camera3d, numStars: number) {
+        this.starX = []
+        this.starY = []
+        this.starColor = []
+        this.numStars = numStars
+
+        this.starAngle = 0
+        this.starCos = 1
+        this.starSin = 0
+        this.starX0 = 0
+        this.starY0 = 0
+
+        for (let i = 0; i < numStars; ++i) {
+            this.starX.push(Fx8(Math.random() * 2))
+            this.starY.push(Fx8(Math.random() * 2))
+            this.starColor.push(Math.floor(Math.random() * 6 + 2))
+        }
+
+        // The starfield movement needs to be matched to the camera field of view.
+        // The stars are drawn in a square that's rotated around the center of the
+        // screen, and the square is just big enough to cover the corners of the
+        // rectangular screen. Use the renderer camera field of view angle for
+        // that diagonal when calculating star motion.
+        const diagonalHalfFovRadians = camera.diagonalHalfFovDegrees() * Math.PI / 180
+        //console.log("diagonalHalfFovDegrees=" + this.diagonalHalfFovDegrees)
+
+        // Shifting the field of view by diagonalHalfFovDegrees should change
+        // the star X0/Y0 offset by 0.5.
+        this.radiansToShift = 1 / diagonalHalfFovRadians / 2
+    }
+
+    draw(img: Image) {
+        perfStarfield.start()
+        // Screen center to corner is sqrt(80^2 + 60^2) = 100 pixels,
+        // the starfield must extend at least that far in each direction
+        // from the origin.
+        /*
+        const starCos100 = Math.round(this.starCos * 100 * FP_ONE)
+        const starSin100 = Math.round(this.starSin * 100 * FP_ONE)
+        const starX0FP = Math.round(this.starX0 * FP_ONE_SQ)
+        const starY0FP = Math.round(this.starY0 * FP_ONE_SQ)
+        for (let i = 0; i < this.numStars; ++i) {
+            const x = ((this.starX[i] + starX0FP) & FP_ONE_SQ_MASK) * 2 - FP_ONE_SQ
+            const y = ((this.starY[i] + starY0FP) & FP_ONE_SQ_MASK) * 2 - FP_ONE_SQ
+            const xs = 80 + (Math.imul(x, starCos100) - Math.imul(y, starSin100) >> FP_BITS_3)
+            const ys = 60 + (Math.imul(x, starSin100) + Math.imul(y, starCos100) >> FP_BITS_3)
+            if (xs >= 0 && xs < 160 && ys >= 0 && ys < 120) {
+                img.setPixel(xs, ys, this.starColor[i])
+            }
+        } 
+        */           
+        const screenDiagPixels = 100
+        const starCos100 = Fx8(this.starCos * screenDiagPixels)
+        const starSin100 = Fx8(this.starSin * screenDiagPixels)
+        const starX0FP = Fx8(this.starX0 * 2)
+        const starY0FP = Fx8(this.starY0 * 2)
+        for (let i = 0; i < this.numStars; ++i) {
+            const x = Fx.iadd(-1, Fx.frac2(Fx.add(this.starX[i], starX0FP)))
+            const y = Fx.iadd(-1, Fx.frac2(Fx.add(this.starY[i], starY0FP)))
+            //const y = ((Fx.add(this.starY[i], starY0FP) & FP_ONE_SQ_MASK) * 2 - FP_ONE_SQ
+            const xs = 80 + Fx.toIntFloor(Fx.sub(Fx.mul(x, starCos100), Fx.mul(y, starSin100)))
+            const ys = 60 + Fx.toIntFloor(Fx.add(Fx.mul(x, starSin100), Fx.mul(y, starCos100)))
+            //const ys = 60 + (Math.imul(x, starSin100) + Math.imul(y, starCos100) >> FP_BITS_3)
+            if (xs >= 0 && xs < 160 && ys >= 0 && ys < 120) {
+                img.setPixel(xs, ys, this.starColor[i])
+            }
+        } 
+        perfStarfield.end()
+    }
+
+    // Counterclockwise rotation around screen center by an angle in radians
+    rotateZ(angleRadians: number) {
+        this.starAngle += angleRadians
+        this.starCos = Math.cos(this.starAngle)
+        this.starSin = Math.sin(this.starAngle)
+    }
+
+    // Rotation around Y axis (horizontal shift)
+    rotateY(angleRadians: number) {
+        const starAngleShift = angleRadians * this.radiansToShift
+        this.starX0 += this.starCos * starAngleShift
+        this.starY0 -= this.starSin * starAngleShift
+    }
+
+    // Rotation around X axis (vertical shift)
+    rotateX(angleRadians: number) {
+        const starAngleShift = angleRadians * this.radiansToShift
+        this.starX0 += this.starSin * starAngleShift
+        this.starY0 += this.starCos * starAngleShift
+    }
+}
+
+let isSetupScreen = true
+let showFps = false
+let useCockpit = true
+setCockpitVisibility()
+
+// Layers of the overall scene, drawn in ascending z-layer order
+const zLayerStarfield = 0
+const zLayer3D = 1
+const zLayerLaser = 2
+const zLayerCockpit = 3
+const zLayerReticle = 4
+const zLayerRadar = 5
+const zLayerSetup = 6
+const zLayerDebug = 200
+
+let overlaySprite: Sprite
+
+// Aiming reticle at the center of the screen. Also used for
+// text message display.
+let reticleSprite = sprites.create(assets.image`reticle`)
+reticleSprite.z = zLayerReticle
+reticleSprite.setPosition(80, 60)
+
+// Configure the 3D renderer.
+let renderer = new Renderer3d()
+renderer.useFlatShading = false
+renderer.setPalette8Gray8Color()
+renderer.setLightAngles(45, 30)
+
+// Set the horizontal field of view for 3D rendering.
+const horizontalFovDegrees: number = 90
+let camera = new Camera3d(horizontalFovDegrees)
+
+let lastTick = 0
+let nextStatsTimestamp = 0
+const boostSpeedMultiplier = 3 // added to baseSpeed while boosting
+const boostSustainFrames = 100
+const boostReleaseFrames = 50
+let controlMode = 0
+let stickRoll = true
+let accelerometerRoll = false
+let accelerometerPitch = false
+let accelerometerYaw = false
+let controlInvertY = true
+let controlAnalogStick = true
+
+let laserPowerPerShot = 20
+let laserPowerMax = 128
+let laserOverheatingPlayed = false
+let shipHitColor = 0
+let shipHitInstanceNum = 0
+
+let waveNum = 1
+let nextWaveNum = 1
+let nextWaveCountdown = 0
+let nextWaveCountdownLength = 200
+
+// Size in each axis direction of the observable universe.
+let worldSize = 100
+
+const starCounts = [100, 200, 400, 800, 50]
+let starCount = starCounts[0]
+
+let icoModel = new IcosahedronModel()
+let asteroids: AsteroidInstance[] = []
+
+let collisionsEnabled = true
+
+let shipModel = new ShipModel()
+let enemyShipInstances: ShipInstance[] = []
+
+let playerState = new ShipState(playerShipSpec)
+
+let needsWaveReset = false
+const preGameSetup = function() {
+    console.log("preGameSetup, nextWaveNum=" + nextWaveNum)
+    if (needsWaveReset) {
+        asteroids = []
+        enemyShipInstances = []
+        waveNum = nextWaveNum
+        nextWaveNum = 1
+        needsWaveReset = false
+    }
+}
+
+const spawnAsteroids = function() {
+    console.log("spawnAsteroids, waveNum=" + waveNum)
+    waveConfig = getWaveConfig(waveNum)
+
+    // Face player forward so that the ships appear generally ahead.
+    quat.setIdentity(playerState.orientation)
+
+    enemyShipInstances = []
+    for (let i = 0; i < waveConfig.shipCount; ++i) {
+        let shipInstance = new ShipInstance(waveConfig.shipSpec, i)
+        if (waveNum == 1) {
+            shipInstance.state.position[0] = Fx8(4)
+            shipInstance.state.position[1] = Fx8(2)
+            shipInstance.state.position[2] = Fx8(-12)
+        } else {
+            shipInstance.state.position[0] = Fx8(Math.randomRange(-12, 12))
+            shipInstance.state.position[1] = Fx8(Math.randomRange(-12, 12))
+            shipInstance.state.position[2] = Fx8(Math.randomRange(-20, -14))
+            quat.rotateX(shipInstance.state.orientation, Fx8(Math.random()))
+            quat.rotateY(shipInstance.state.orientation, Fx8(Math.random()))
+            quat.rotateZ(shipInstance.state.orientation, Fx8(Math.random()))
+        }
+        shipInstance.state.setWorldFromModelPosition(shipInstance.worldFromModel as any[] as Fx8[])
+        enemyShipInstances.push(shipInstance)
+    }
+
+
+    asteroids = []
+    let icoCount = waveConfig.asteroidCount
+    // Don't exceed the 256-priority-level limit, leaving some spares.
+    if (icoCount > 250) icoCount = 250
+    for (let i = 0; i < icoCount; ++i) {
+        asteroids.push(new AsteroidInstance(waveNum, i, worldSize))
+    }
+}
+
+let radar = new Radar(camera)
+scene.createRenderable(zLayerRadar, function(img: Image, sceneCamera: scene.Camera) {
+    radar.draw(img, sceneCamera, asteroids, worldSize, isSetupScreen, useCockpit)
+})
+
+let starfield = new Starfield(camera, starCount)
+scene.createRenderable(zLayerStarfield, function(img: Image, unused_sceneCamera: scene.Camera) {
+    starfield.draw(img)
+})
+
+// Rotation control sensitivity, degrees per target frame.
+// This is scaled below based on framerate.
+const rotAngleDegPerFrame = 2
+let yawRate = 1
+let rollRate = 1
+let pitchRate = 1
+
+let soundZap = new music.Melody("~16 @10,490,0,0 !1600,500^1")
+let soundOverheated = new music.Melody("~16 @10,490,0,0 !800,500^700")
+let soundBoom = new music.Melody("~4 @10,990,0,1 !400,1")
+let soundExploded = new music.Melody("~4 @10,1990,0,1 !300,1")
+let soundNextWave = new music.Melody("~16 R:4-100 E3 F E F E F")
+let soundBoost = new music.Melody("~18 @25,25,200," + boostReleaseFrames * 20 + " !200," + boostSustainFrames * 20)
+let soundShieldHitPlayer = new music.Melody("~16 @20,500,0,0 !600,500^620")
+let soundShieldHitOther = new music.Melody("~16 @20,250,0,0 !600,250^620")
+let soundShieldDown = new music.Melody("~16 R:4-300 @100,200,0,0 !600,100^500 !500,100^400 !400,100^300 !300,100^200")
+//let soundHullHit = new music.Melody("~5 @100,700,0,0 !2000")
+let soundHullHitPlayer = new music.Melody("~18 @10,700,0,0 !330")
+let soundHullHitOther = new music.Melody("~18 @10,300,0,0 !330")
+
+/*
+for (let i = 0; i < 10; ++i) {
+    soundBoom.playUntilDone(100)
+    pause(1000)
+}
+throw ("quit")
+*/
+
+const cleanUpResources = function() {
+    renderer.freeResources()
+
+    // Destroy the asteroid instances and other large objects. Careful,
+    // objects used in scene.createRenderable()-registered functions
+    // must remain valid. (Zero asteroids is OK, asteroids=null would not be.)
+    asteroids = []
+    if (overlaySprite) overlaySprite.destroy()
+    overlaySprite = null
+    control.gc()
+}
+
+/*
+info.setLife(3)
+info.onLifeZero(function() {
+})
+*/
+
+function applyShipDamage(state: ShipState, isPlayer: boolean) : boolean {
+    if (state.shield) {
+        shipHitColor = 1 // shield hit
+        if (--state.shield) {
+            if (isPlayer) {
+                soundShieldHitPlayer.play(100)
+                flashColor = 8
+            } else {
+                soundShieldHitOther.play(70)
+            }
+        } else {
+            soundShieldDown.play(isPlayer ? 100 : 70)
+        }
+    } else {
+        shipHitColor = 2 // hull hit
+        if (--state.hull) {
+            if (isPlayer) {
+                soundHullHitPlayer.play(100)
+                flashColor = 11
+            } else {
+                soundHullHitOther.play(70)
+            }
+        } else {
+            if (isPlayer) {
+                soundExploded.play(200)
+            } else {
+                soundBoom.play(80)
+                reticleSprite.startEffect(particleExplode, 100)
+            }
+            return true
+        }
+    }
+    return false
+}
+
+// Matrices are 3 rows x 4 columns, following OpenGL conventions but 
+// omitting the fourth row which is always (0, 0, 0, 1).
+// 
+//    m0 m3 m6 m9
+//    m1 m4 m7 m10
+//    m2 m5 m8 m11
+//
+// This is stored as a plain array in column-major order:
+//   [m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11] 
+//
+// Geometrically, this combines a rotation and position. 
+// Space B's origin in space A coordinates is at (ax, ay, az).
+// Space B's X axis is in direction (ux, uy, uz) in space A coordinates.
+// Space B's Y axis is in direction (vx, vy, vz) in space A coordinates.
+// Space B's Z axis is in direction (wx, wy, wz) in space A coordinates.
+//
+// This matrix product transforms a point in space B coordinates (bx, by, bz)
+// to space A coordinates (ax, ay, az):
+//
+//    ux vx wx px  *  bx  =  ax  = ux*bx + vx*by + wx*bz + ax
+//    uy vy wy py     by     ay    uy*bx + vy*by + wy*bz + ay
+//    uz vz wz pz     bz     az    uz*bx + vz*by + wz*bz + az
+//                     1      1    1
+
+const viewerPoseFx8: Fx8[] = []
+mat_setIdentity_FP(viewerPoseFx8 as any[] as number[])
+const shipFrameMovementFx8: Fx8[] = [Fx.zeroFx8, Fx.zeroFx8, Fx.zeroFx8]
+
+const startNextWaveIfAllDestroyed = function() {
+    console.log("startNextWaveIfAllDestroyed, waveNum=" + waveNum)
+
+    if (!nextWaveCountdown && !enemyShipInstances.length) {
+        // All enemies just got destroyed. The player doesn't need
+        // to destroy all asteroids, just clean up leftovers here.
+        asteroids = []
+
+        // Do a garbage collection now to reduce hiccups during gameplay
+        control.gc()
+        ++waveNum
+        console.log("startNextWaveIfAllDestroyed cond, new waveNum=" + waveNum)
+
+        reticleSprite.say("Wave " + waveNum , 2500)
+        soundNextWave.play(100)
+        nextWaveCountdown = nextWaveCountdownLength
+    }
+}
+
+function playerShotObject(objectPose: Fx8[], model: MeshModelBase) : boolean {
+    const x = objectPose[9]
+    const y = objectPose[10]
+    const z = objectPose[11]
+    const d2 = lenSq([x, y, Fx.zeroFx8]) as any as number
+    const r_squared = model.boundingSphereRadiusSquared
+    return (d2 < r_squared && Fx.compare(z, Fx.zeroFx8) < 0)
+}
+
+const shootLaser = function(state: ShipState, isPlayer: boolean) {
+    if (state.firing) return
+
+    if (state.laserPower < laserPowerPerShot) {
+        if (isPlayer && !laserOverheatingPlayed) {
+            soundOverheated.play(50)
+            laserOverheatingPlayed = true
+        }
+        return
+    } else {
+        if (isPlayer) laserOverheatingPlayed = false
+    }
+    state.firing = 8
+    state.laserPower -= laserPowerPerShot
+    soundZap.play(isPlayer ? 50 : 20)
+
+    if (isPlayer) {
+        // Don't check for hits if there are no targets. This avoids triggering
+        // the next wave countdown multiple times.
+        let hitTarget = false
+        if (renderer.drawnAtCenter) {
+            for (let i = asteroids.length - 1; i >= 0; --i) {
+                if (playerShotObject(asteroids[i].viewerFromModel as any as Fx8[], icoModel)) {
+                    reticleSprite.startEffect(particleExplode, 100)
+                    soundBoom.play(100)
+                    asteroids.splice(i, 1)
+                    info.player1.changeScoreBy(1)
+                    hitTarget = true
+                    break
+                }
+            }
+            for (let i = enemyShipInstances.length - 1; i >= 0; --i) {
+                const shipInstance = enemyShipInstances[i]
+                if (playerShotObject(shipInstance.viewerFromModel as any as Fx8[], shipModel)) {
+                    shipHitInstanceNum = shipInstance.instanceNum
+                    if (applyShipDamage(shipInstance.state, false)) {
+                        enemyShipInstances.splice(i, 1)
+                        info.player1.changeScoreBy(waveNum * 10)
+                        hitTarget = true
+                        break
+                    }
+                }
+            }
+        }
+        if (hitTarget) {
+            startNextWaveIfAllDestroyed()
+        }
+    } else {
+        // Shortcut: enemy ships only fire if they are lined up to hit,
+        // so there's no need to check for a hit.
+        if (applyShipDamage(playerState, true)) {
+            playerDestroyed()
+        }
+        scene.cameraShake(4, 400)
+    }
+}
+
+function applyBoost(state: ShipState, isPlayer: boolean) {
+    if (state.boostActive < boostReleaseFrames) {
+        state.boostActive = boostSustainFrames + boostReleaseFrames
+        soundBoost.play(isPlayer ? 100 : 50)
+    }
+}
+
+const volumes = [64, 128, 255, 0, 8, 16, 32]
+
+const pieceCounts = [4, 8, 16, 32, 0]
+
+// The menu entries and row count are set up below.
+let setupMenu: (number | string | Function)[][] = []
+let setupRowCount: number = 0
+let setupValues: number[] = []
+let setupDisplay: string[] = []
+let setupRow = 0
+
+const saveSetupSettings = function() {
+    for (let i = 0; i < setupMenu.length; ++i) {
+        const settingName = setupMenu[i][1]
+        // Skip rows with no key name, including the "start game" setting which must not be persisted.
+        if (!settingName) continue
+        const value = setupValues[i]
+        // No need to save values that are at their default value.
+        // Remove legacy default config entries if present.
+        let oldValue = settings.readNumber(settingPrefix + settingName)
+        if (value == 0) {
+            if (oldValue) settings.remove(settingPrefix + settingName)
+            continue
+        }
+        // Don't write a value identical to the currently-stored one.
+        if (value == oldValue) continue
+        settings.writeNumber(settingPrefix + settingName, setupValues[i])
+    }
+}
+
+const setupVolume = function(choice: number) {
+    music.setVolume(volumes[choice])
+    return "Sound volume: " + volumes[choice]
+}
+
+const setupShowFPS = function(choice: number) {
+    showFps = choice ? true : false
+    return "Show FPS: " + (showFps ? "on" : "off")
+}
+
+const setupRenderMode = function(choice: number) {
+    renderer.useFlatShading = choice ? true : false
+    return "Shading mode: " + (renderer.useFlatShading ? "flat" : "dithered")
+}
+
+function setCockpitVisibility() {
+    if (useCockpit) {
+        overlaySprite = sprites.create(assets.image`cockpitCol8b`)
+        // The default position is what we want, so no need to
+        // move it. Set the Z order to occlude explosions which
+        // are at the reticle sprite's z=1. The radar image is 
+        // at z=3 so that it's in front of the cockpit.
+        overlaySprite.z = zLayerCockpit
+    } else {
+        if (overlaySprite) overlaySprite.destroy()
+        overlaySprite = null
+    }
+
+    return "Cockpit overlay: " + (useCockpit ? "on" : "off")
+}
+
+const setupCockpitMode = function(choice: number) {
+    // Use true for default choice=0
+    useCockpit = choice ? false : true
+
+    setCockpitVisibility()    
+}
+
+const setupAnalogStick = function(choice: number) {
+    // Use true for default choice=0
+    controlAnalogStick = choice ? false : true
+    return "Analog joystick: " + (controlAnalogStick ? "on" : "off")
+}
+
+/*
+const setupWorldSize = function(choice: number, loading: boolean=false) {
+    worldSize = worldSizes[choice]
+    if (!loading) {
+        nextWaveNum = waveNum
+        needsWaveReset = true
+    }
+    return "World size: " + worldSizeDescriptions[choice]
+}
+*/
+
+const setupStarCount = function(choice: number) {
+    starCount = starCounts[choice]
+    starfield = new Starfield(camera, starCount)
+    return "Number of stars: " + starCount
+}
+
+const setupStartingWave = function(waveChoiceMinusOne: number) {
+    // The stored wave numbers are zero-based, while the in-game wave numbers start at one.
+    const waveChoice = waveChoiceMinusOne + 1
+    console.log("setupStartingWave waveChoice=" + waveChoice)
+    // Allow directly changing waves if score is still zero.
+    const isNewGame = (info.player1.score() == 0)
+    // Internal wave numbers start at zero, add one for screen display
+    if (isNewGame) {
+        nextWaveNum = waveChoice
+        needsWaveReset = true
+        return "Start at wave: " + waveChoice
+    }
+
+    // Not a new game. Allow skipping waves, but not going backwards.
+    if (waveChoice > waveNum) {
+        nextWaveNum = waveChoice
+        needsWaveReset = true
+        return "Skip ahead to wave: " + waveChoice
+    } else {
+        return "Start next game at wave: " + waveChoice
+    }
+}
+
+const setupStartGame = function(choice: number, loading: boolean=false) {
+    if (!loading) {
+        saveSetupSettings()
+
+        isSetupScreen = false
+
+        preGameSetup()
+
+        if (controller.A.isPressed()) {
+            // Start out with the laser set to having just been fired, this avoids
+            // a stray shot sound when starting the game with the A button.
+            let firing = 10
+        }
+    }
+    return "Start Game"
+}
+
+const setupResetGame = function(choice: number, loading: boolean=false) {
+    if (!loading) {
+        saveSetupSettings()
+        game.reset()
+    }
+    return "Reset game"
+}
+
+const setupRunBenchmark = function(choice: number, loading: boolean=false) {
+    if (!loading) {
+        runBenchmark()
+    }
+    return "Run benchmark"
+}
+
+const setupEnableTrace = function(choice: number, loading: boolean=false) {
+    if (!loading) {
+        if (simpleperf.isEnabled) {
+            simpleperf.disableAndShowResults()
+        } else {
+            simpleperf.enable()
+        }
+    }
+    return simpleperf.isEnabled ? "Show trace results" : "Enable perf tracing"
+}
+
+const showSystemMenu = function(choice: number, loading: boolean=false) {
+    if (!loading) {
+        scene.systemMenu.showSystemMenu()
+    }
+    return "Open system menu"
+}
+
+const setupInvertY = function(choice: number, loading: boolean=false) {
+   // Use true for default choice=0    
+    controlInvertY = choice ? false : true
+
+    return "Joystick Y: " + (controlInvertY ? "inverted" : "normal")
+}
+
+const setupControls = function(controlMode: number) {
+    const controls = "Controls: "
+    stickRoll = false
+    accelerometerYaw = false
+    accelerometerRoll = false
+    accelerometerPitch = false
+    switch (controlMode) {
+        case 0:
+            yawRate = 1
+            rollRate = 1
+            pitchRate = 1
+            return controls + "Stick yaw/pitch"
+        case 1:
+            stickRoll = true
+            yawRate = 1
+            rollRate = 2
+            pitchRate = 1.4
+            return controls + "Stick roll/pitch"
+        case 2:
+            accelerometerRoll = true
+            yawRate = 0.7
+            rollRate = 1.4
+            pitchRate = 1.4
+            return controls + "Tilt roll"
+        case 3:
+            accelerometerRoll = true
+            accelerometerPitch = true
+            yawRate = 0.7
+            rollRate = 1.4
+            pitchRate = 1.4
+            return controls + "Tilt roll/pitch"
+        case 4:
+            stickRoll = true
+            accelerometerYaw = true
+            accelerometerPitch = true
+            yawRate = 0.7
+            rollRate = 1.4
+            pitchRate = 1.4
+            return controls + "Tilt yaw/pitch"
+    }
+    return ""
+}
+
+// Each menu item has:
+// - the number of choices available
+// - the name (after settingPrefix) used for saving. Empty string means don't save.
+// - the function to be called when a setting is changed. 
+//
+// Entries with a single choice are intended for actions that take effect immediately when selected.
+setupMenu = [
+    [1, "", setupStartGame],
+    [20, "startingWave", setupStartingWave],
+    [volumes.length, "setupVolume", setupVolume],
+    //[worldSizes.length, "worldSize", setupWorldSize],
+    //[5, "controlScheme", setupControls],
+    [2, "analogStick", setupAnalogStick],
+    [2, "invertY", setupInvertY],
+    //[2, "useCockpit", setupCockpitMode],
+    //[starCounts.length, "starCount", setupStarCount],
+    //[2, "useDither", setupRenderMode],
+    [2, "showFps", setupShowFPS],
+    [1, "", setupEnableTrace],
+    //[1, "", setupRunBenchmark],
+    [1, "", setupResetGame],
+    [1, "", showSystemMenu],
+]
+setupRowCount = setupMenu.length
+for (let i = 0; i < setupMenu.length; ++i) {
+    let initialValue = 0
+    const settingName = setupMenu[i][1]
+    if (settingName && settings.exists(settingPrefix + settingName)) {
+        initialValue = settings.readNumber(settingPrefix + settingName)   
+        //console.log("saved value for " + settingName + " is " + initialValue) 
+
+        // Check for invalid settings and remove them. This includes a setting with
+        // value zero, that's the default and doesn't need to be saved.
+        if (initialValue <= 0 || initialValue >= setupMenu[i][0] || initialValue != Math.floor(initialValue)) {
+            console.log("saved value " + initialValue + " for " + settingName + " invalid, using default") 
+            initialValue = 0
+            settings.remove(settingPrefix + settingName)
+        }
+    }
+    let setupFunc = setupMenu[i][2] as Function
+    let initialDisplay = ""
+
+    // It's possible that the saved setting isn't usable and causes a
+    // runtime error. In that case, delete the setting and try again
+    // with the default value.
+    try {
+        initialDisplay = setupFunc(initialValue, true)
+        if (!initialDisplay) {
+            console.log("Loading setting " + settingName + " rejected, using default")
+            initialValue = 0
+            initialDisplay = setupFunc(initialValue, true)
+        }
+    } catch(err) {
+        console.log("Loading setting " + settingName + " failed: " + err)
+        settings.remove(settingPrefix + settingName)
+        initialValue = 0
+        initialDisplay = setupFunc(initialValue, true)
+    }
+    setupValues.push(initialValue)
+    setupDisplay.push(initialDisplay)
+}
+
+controller.down.onEvent(ControllerButtonEvent.Pressed, function() {
+    if (!isSetupScreen) return
+    setupRow = (setupRow + 1) % setupRowCount
+})
+
+controller.up.onEvent(ControllerButtonEvent.Pressed, function() {
+    if (!isSetupScreen) return
+    setupRow = (setupRow + setupRowCount - 1) % setupRowCount
+})
+
+const setupChangeEntry = function(change: number) {
+    if (!isSetupScreen) return
+
+    let menu = setupMenu[setupRow]
+    let numValues = menu[0] as number
+    let setupFunc = menu[2] as Function
+    setupValues[setupRow] = (setupValues[setupRow] + numValues + change) % numValues
+    setupDisplay[setupRow] = setupFunc(setupValues[setupRow])
+
+}
+const setupNextEntry = function() {
+    setupChangeEntry(1)
+}
+const setupPrevEntry = function() {
+    setupChangeEntry(-1)
+}
+controller.A.onEvent(ControllerButtonEvent.Pressed, setupNextEntry)
+controller.right.onEvent(ControllerButtonEvent.Pressed, setupNextEntry)
+controller.right.onEvent(ControllerButtonEvent.Repeated, setupNextEntry)
+controller.left.onEvent(ControllerButtonEvent.Pressed, setupPrevEntry)
+controller.left.onEvent(ControllerButtonEvent.Repeated, setupPrevEntry)
+
+controller.menu.onEvent(ControllerButtonEvent.Pressed, function() {
+    if (isSetupScreen) {
+        // Treat this as fully equivalent to using the "Start game" function
+        setupStartGame(0, false)
+    } else {
+        setupDisplay[0] = "Continue Game"
+        isSetupScreen = true
+    }
+})
+
+// Set up the initial asteroid state.
+spawnAsteroids()
+
+const colTextBright = 9
+const colTextDim = 7
+const colTextBg = 2
+const perfSetupMenu = simpleperf.getCounter("menu")
+scene.createRenderable(zLayerSetup, function(img: Image, unused_sceneCamera: scene.Camera) {
+    if (!isSetupScreen) return
+
+    perfSetupMenu.start()
+    img.printCenter("Space Rocks Revenge", 7, 11, image.font8)
+    img.printCenter("Space Rocks Revenge", 6, 9, image.font8)
+
+    img.printCenter("Press A to fire laser", 22, 12)
+    img.printCenter("Press B to boost speed", 32, 12)
+
+    let y = 70
+    const maxRows = 5
+    const firstRow = Math.max(0, setupRow + 1 - maxRows)
+    if (firstRow > 0) {
+        img.print("↑", 0, y, colTextDim, image.font8)
+        img.print("↑", 155, y, colTextDim, image.font8)
+    }
+    for (let i = 0; i < maxRows; ++i) {
+        const row = firstRow + i
+        if (row >= setupRowCount) break
+        if (row == setupRow) {
+            img.fillRect(0, y - 1, 160, 10, 2)
+            img.drawRect(0, y - 1, 160, 10, 1)
+        }
+        img.printCenter(setupDisplay[row], y + 1, colTextBg)
+        img.printCenter(setupDisplay[row], y, row == setupRow ? colTextBright : colTextDim)
+        y += 10
+    }
+    if (firstRow + maxRows < setupRowCount) {
+        const y2 = y - 10
+        img.print("↓", 0, y2, colTextDim, image.font8)
+        img.print("↓", 155, y2, colTextDim, image.font8)
+    }
+    perfSetupMenu.end()
+})
+
+const perfLayer3D = simpleperf.getCounter("layer3d")
+const perfLayer3DSort = simpleperf.getCounter("layer3dsort")
+
+const baseShader = shader3d.getHalfAngleDiffuseShader(renderer.lightDirection, 0, 28)
+const asteroidShader = baseShader //shader3d.applyDistanceDimming(baseShader, worldSize << FP_BITS, 0)
+const blueShader = shader3d.getFlatColorShader(15 * 4)
+const redShader = shader3d.getFlatColorShader(11 * 4)
+const shipHitShaders = [blueShader, redShader]
+
+let flashColor = 0
+
+function drawLayer3D(target: Image, unused_sceneCamera: scene.Camera) {
+    perfLayer3D.start()
+
+    // Briefly flash the screen background for getting-hit effects
+    if (flashColor) {
+        target.fillRect(0, 0, 160, 120, flashColor)
+        flashColor = 0
+    }
+    // Sort the instances by increasing Z in viewer space (+z faces viewer)
+    perfLayer3DSort.start()
+    // The objects need to be merged into a single list for proper occlusion
+    let allObjects : InstanceBase[] = asteroids.slice()
+    for (let i = 0; i < enemyShipInstances.length; ++i) {
+        allObjects.push(enemyShipInstances[i])
+    }
+    allObjects.sort((a, b) => a.getZ() - b.getZ())
+    perfLayer3DSort.end()
+
+    for (let i = 0; i < allObjects.length; ++i) {
+        // With the objects sorted back to front, add each one's face polygons
+        // to the drawing queue for this frame.
+        const obj = allObjects[i]
+        if (obj instanceof AsteroidInstance) {
+            icoModel.drawInstance(renderer, camera, asteroidShader, obj)
+        } else if (obj instanceof ShipInstance) {
+            const shipInstance = obj as ShipInstance
+            const shader = shipHitColor && shipHitInstanceNum == shipInstance.instanceNum ?
+                shipHitShaders[shipHitColor - 1] : baseShader
+            shipModel.drawInstance(renderer, camera, shader, shipInstance)
+            shipHitColor = 0
+        } else {
+            throw("unsupported object type")
+        }
+    }
+
+    /*
+    for (let i = 0; i < asteroids.length; ++i) {
+        // With the objects sorted back to front, add each one's face polygons
+        // to the drawing queue for this frame.
+        icoModel.drawInstance(renderer, camera, asteroidShader, asteroids[i])
+    }
+
+    // Use baseShader for the ship, not distance dimming
+    for (let i = 0; i < enemyShipInstances.length; ++i) {
+        const shipInstance = enemyShipInstances[i]
+        const shader = shipHitColor && shipHitInstanceNum == i ?
+            shipHitShaders[shipHitColor - 1] : baseShader
+        shipModel.drawInstance(renderer, camera, shader, shipInstance)
+        shipHitColor = 0
+    }
+    */
+
+    renderer.drawFrame(target)
+    //reticleSprite.say((renderer.drawnAtCenter) ? "+" : "-")
+    perfLayer3D.end()
+}
+scene.createRenderable(zLayer3D, drawLayer3D)
+
+const gaugeWidthMax = 100 - 72 + 1
+const laserGaugeMultiplierFP = Math.ceil(gaugeWidthMax * FP_ONE / laserPowerMax)
+
+scene.createRenderable(zLayerLaser, function(target: Image, sceneCamera: scene.Camera) {
+    // Update the cockpit user interface
+    let laserGaugeSize = Math.imul(playerState.laserPower, laserGaugeMultiplierFP) >> FP_BITS
+
+    // Don't show a filled laser gauge on the setup screen, it's too bright.
+    if (isSetupScreen) laserGaugeSize = 0
+
+    if (useCockpit) {
+        let shakeX = -sceneCamera.drawOffsetX
+        let shakeY = -sceneCamera.drawOffsetY
+
+        // Dark gray background for all gauges
+        target.fillRect(72 + shakeX, 83 + shakeY, gaugeWidthMax, 17, 2)
+
+        target.fillRect(72 + shakeX, 83 + shakeY, laserGaugeSize, 5, 10)
+        //target.drawRect(33 + shakeX + laserGaugeSize, 82 + shakeY, laserGaugeWidthMax - laserGaugeSize, 2, 2)
+
+        const shieldGaugeSize = scale_by_fraction(playerState.shield, gaugeWidthMax, playerShipSpec.shieldStrength)
+        const hullGaugeSize = scale_by_fraction(playerState.hull, gaugeWidthMax, playerShipSpec.hullStrength)
+        target.fillRect(72 + shakeX, 89 + shakeY, shieldGaugeSize, 5, 15)
+        target.fillRect(72 + shakeX, 95 + shakeY, hullGaugeSize, 5, 14)
+    } else {
+        target.drawRect(0, 120 - laserGaugeSize, 2, laserGaugeSize, 10)
+    }    
+})
+
+scene.createRenderable(zLayerLaser, function(target: Image, sceneCamera: scene.Camera) {
+    if (playerState.firing > 3) {
+        let shakeX = -sceneCamera.drawOffsetX
+        let shakeY = -sceneCamera.drawOffsetY
+        // Don't offset the far point of the laser, that isn't affected by screen shake.
+        target.drawLine(60 + shakeX, 119 + shakeY, 80, 60, 10)
+        target.drawLine(100 + shakeX, 119 + shakeY, 80, 60, 10)
+    }
+})
+
+let statsFrameCounter = 0
+let statsLastFps = 0
+scene.createRenderable(zLayerDebug, function(img: Image, unused_sceneCamera: scene.Camera) {
+    if (!showFps) return;
+
+    ++statsFrameCounter
+
+    const now = control.millis()
+    if (now >= nextStatsTimestamp) {
+        statsLastFps = statsFrameCounter
+        statsFrameCounter = 0
+
+        nextStatsTimestamp += 1000
+        // If we're way behind schedule, advance the time counter
+        if (nextStatsTimestamp <= now) nextStatsTimestamp = now + 1000
+    }
+
+    img.print("" + statsLastFps, 74, 0, 12)
+})
+
+const perfUpdateScene = simpleperf.getCounter("updateScene")
+
+const updateScene = function(multiplierFloat: number, shipFrameMovementFx8: Fx8[]) {
+    perfUpdateScene.start()
+
+    renderer.setViewerPoseFx8(viewerPoseFx8)
+    renderer.prepareFrame()
+
+    const multiplier = Fx8(multiplierFloat)
+    for (let i = 0; i < asteroids.length; ++i) {
+        asteroids[i].updateWorldFromModel(multiplier, shipFrameMovementFx8, isSetupScreen)
+        asteroids[i].preRender(renderer)
+    }
+
+    for (let i = 0; i < enemyShipInstances.length; ++i) {
+        const shipInstance = enemyShipInstances[i]
+        shipInstance.updateWorldFromModel(multiplier, shipFrameMovementFx8, isSetupScreen)
+        shipInstance.preRender(renderer)
+    }
+    perfUpdateScene.end()
+}
+
+/*
+rotateZ(-Math.PI / 2)
+rotateX(0 * Math.PI / 180)
+rotateY(-30 * Math.PI / 180)
+*/
+
+function playerDestroyed() {
+    cleanUpResources()
+    pause(250)
+    // TODO: see if a scene change can avoid error 021 (too many objects) on meowbit?
+    //game.pushScene()
+    game.over(false)
+    //game.popScene()
+}
+
+function checkCollision(obj: InstanceBase, r_squared: number) {
+    const x = obj.getX()
+    const y = obj.getY()
+    const z = obj.getZ()
+    //const d2 = Math.imul(x, x) + Math.imul(y, y) + Math.imul(z, z) >> FP_ONE
+    const d2 = lenSq([x as any as Fx8, y as any as Fx8, z as any as Fx8]) as any as number
+    // The asteroid radius is 2 units, or 4 when squared. Use a slightly
+    // larger radius when checking for collisions to simulate that the ship
+    // extends outwards a bit also.
+    //const r_squared = 5 << FP_BITS_SQ
+    if (collisionsEnabled && d2 < r_squared) {
+        if (applyShipDamage(playerState, true)) playerDestroyed()
+        //info.changeLifeBy(-1)
+        scene.cameraShake(8, 800)
+        return true
+    }
+    return false
+}
+
+const perfUpdate = simpleperf.getCounter("update")
+
+let buttonBPressed = false
+let buttonBOtherAction = false
+
+const doUpdate = function() {
+    perfUpdate.start()
+    let tick = game.runtime()
+
+    let multiplier = 1
+    if (lastTick) {
+        const lastFrameDeltaMillis = tick - lastTick
+        const targetMillis = 20 // 50 fps => 20ms per frame
+        multiplier = Math.constrain(lastFrameDeltaMillis / targetMillis, 1, 5)
+    }
+    const multiplierFx8 = Fx8(multiplier)
+    lastTick = tick
+
+    playerState.applyControlsDecay(multiplierFx8)
+
+    if (isSetupScreen) {
+        updateScene(multiplier, [Fx.zeroFx8, Fx.zeroFx8, Fx.zeroFx8])
+        perfUpdate.end()
+        return
+    }
+
+    let rotAngle = multiplier * rotAngleDegPerFrame * Math.PI / 180
+
+    if (controller.B.isPressed()) {
+        applyBoost(playerState, true)
+    }
+
+    //console.log("throttle=" + throttleSetting)
+    //speed = speed * throttleSetting / 5
+
+    let stickX = 0
+    let stickY = 0
+    if (controlAnalogStick) {
+        stickX = (controller.left.pressureLevel() - controller.right.pressureLevel()) / 512
+        stickY = (controller.up.pressureLevel() - controller.down.pressureLevel()) / 512
+    } else {
+        if (controller.left.isPressed()) stickX = 1
+        if (controller.right.isPressed()) stickX = -1
+        if (controller.up.isPressed()) stickY = 1
+        if (controller.down.isPressed()) stickY = -1
+    }
+
+    if (stickX != 0) {
+        if (stickRoll) {
+            playerState.addRoll(Fx8(stickX), multiplierFx8)
+            playerState.addYaw(Fx8(stickX), multiplierFx8)
+        } else {
+            playerState.addYaw(Fx8(stickX), multiplierFx8)
+        }
+    }
+    if (stickY != 0) {
+        const amount = controlInvertY ? -stickY : stickY
+        playerState.addPitch(Fx8(amount), multiplierFx8)
+    }
+    starfield.rotateZ(Fx.toFloat(Fx.mul(playerState.roll, playerState.spec.rollRate)) * Math.PI / 256)
+    starfield.rotateX(Fx.toFloat(Fx.mul(playerState.pitch, playerState.spec.pitchRate)) * Math.PI / 256)
+    starfield.rotateY(Fx.toFloat(Fx.mul(playerState.yaw, playerState.spec.yawRate)) * Math.PI / 256)
+
+    /*
+    if (accelerometerRoll || accelerometerYaw) {
+        const accel = [
+            controller.acceleration(ControllerDimension.X) / 1000,
+            controller.acceleration(ControllerDimension.Y) / 1000,
+            controller.acceleration(ControllerDimension.Z) / 1000]
+        if (accelerometerRoll) {
+            const rollAngle = -accel[0] / 10
+            playerState.applyRoll(Fx8(rollAngle / Math.PI))
+            starfield.rotateZ(rollAngle)
+        }
+        if (accelerometerYaw) {
+            const yawAngle = -accel[0] / 10
+            playerState.applyYaw(Fx8(yawAngle / Math.PI))
+            starfield.rotateY(yawAngle)
+        }
+        if (accelerometerPitch) {
+            // Z movement based on 45-degree neutral angle: viewer[2] += accel[1] + accel[2]
+            const pitchAccel = (accel[1] + accel[2]) * 2
+            playerState.applyPitch(Fx8(-rotAngle * pitchRateDirection * pitchAccel / Math.PI))
+            starfield.rotateX(-rotAngle * pitchRateDirection * pitchAccel)
+        }
+    }
+    */
+
+    playerState.applyControls(viewerPoseFx8, false)
+    // The ship's movement this frame is -speed * orientation.z
+    // (-z is forward).
+
+    //shipFrameMovement[0] = -Fx.toFloat(viewerPoseFx8[6]) * speed * multiplier
+    //shipFrameMovement[1] = -Fx.toFloat(viewerPoseFx8[7]) * speed * multiplier
+    //shipFrameMovement[2] = -Fx.toFloat(viewerPoseFx8[8]) * speed * multiplier
+    const speedMul = Fx.mul(playerState.getSpeed(), multiplierFx8)
+    shipFrameMovementFx8[0] = Fx.mul(Fx.neg(viewerPoseFx8[6]), speedMul)
+    shipFrameMovementFx8[1] = Fx.mul(Fx.neg(viewerPoseFx8[7]), speedMul)
+    shipFrameMovementFx8[2] = Fx.mul(Fx.neg(viewerPoseFx8[8]), speedMul)
+
+    //console.log("shipFrameMovement=" + shipFrameMovement.join(", "))
+
+    /*
+    viewerPose[9] += shipFrameMovement[0]
+    viewerPose[10] += shipFrameMovement[1]
+    viewerPose[11] += shipFrameMovement[2]
+    vec_convert_to_FP(shipFrameMovementFP, [0, 0, 0])
+    */
+    //console.log("at " + viewerPose[9] + ", " + viewerPose[10] + ", " + viewerPose[11])
+
+    updateScene(multiplier, shipFrameMovementFx8)
+
+    const randomControl = function() {
+        let val = Math.randomRange(512, 1024)
+        if (Math.percentChance(50)) val = -val
+        return val as any as Fx8
+    }
+
+    // Check for crashing into an asteroid or enemy ship
+    let targetDestroyed = false
+    for (let i = asteroids.length - 1; i >= 0; --i) {
+        if (checkCollision(asteroids[i], 5 << FP_BITS)) {
+            asteroids.splice(i, 1)
+            info.player1.changeScoreBy(1)
+            targetDestroyed = true
+            playerState.pitch = randomControl()
+            playerState.yaw = randomControl()
+            playerState.roll = randomControl()
+            break
+        }
+    }
+    for (let i = enemyShipInstances.length - 1; i >= 0; --i) {
+        const enemyShip = enemyShipInstances[i]
+        if (checkCollision(enemyShip, shipModel.boundingSphereRadiusSquared)) {
+            if (applyShipDamage(enemyShip.state, false)) {
+                enemyShipInstances.splice(i, 1)
+                info.player1.changeScoreBy(waveNum * 10)
+                targetDestroyed = true
+                break
+            } else {
+                // bounce the impacted ship forward (the player's Z direction)
+                enemyShip.state.position[0] =
+                    Fx.add(enemyShip.state.position[0], Fx.imul(viewerPoseFx8[6], -2))
+                enemyShip.state.position[1] =
+                    Fx.add(enemyShip.state.position[1], Fx.imul(viewerPoseFx8[7], -2))
+                enemyShip.state.position[2] =
+                    Fx.add(enemyShip.state.position[2], Fx.imul(viewerPoseFx8[8], -2))
+                enemyShip.state.pitch = randomControl()
+                enemyShip.state.yaw = randomControl()
+                enemyShip.state.roll = randomControl()
+            }
+            playerState.pitch = randomControl()
+            playerState.yaw = randomControl()
+            playerState.roll = randomControl()
+        }
+    }
+    if (targetDestroyed) {
+        startNextWaveIfAllDestroyed()
+    }
+
+    if (controller.A.isPressed()) {
+        shootLaser(playerState, true)
+    }
+    playerState.updateCapacitors(multiplierFx8)
+
+    if (!playerState.firing && nextWaveCountdown) {
+        nextWaveCountdown -= multiplier
+        if (nextWaveCountdown < 0) nextWaveCountdown = 0
+
+        // Show the shield refilling in between waves
+        let maxShield = playerState.spec.shieldStrength
+        if ((maxShield - playerState.shield) / maxShield > nextWaveCountdown / nextWaveCountdownLength) {
+            ++playerState.shield
+        }
+    }
+    if (!enemyShipInstances.length && !nextWaveCountdown) {
+        // Restore the shield between waves.
+        playerState.shield = playerShipSpec.shieldStrength
+        //playerState.hull = playerShipSpec.hullStrength
+
+        if (!nextWaveCountdown) spawnAsteroids()
+    }
+    perfUpdate.end()
+}
+
+game.onUpdate(doUpdate)
+
+function runBenchmark() {
+    asteroids = []
+    waveNum = 1
+    spawnAsteroids()
+    asteroids[0].setPosX(Fx8(0))
+    asteroids[0].setPosY(Fx8(0))
+    asteroids[0].setPosZ(Fx8(-4))
+    enemyShipInstances = []
+
+    let starfield = new Starfield(camera, 800)
+
+    game.pushScene()
+
+    const img = scene.backgroundImage()
+
+    /*
+    let text = ""
+    const results = []
+    img.fill(0)
+    results.push(["drawStarfield", control.benchmark(() => starfield.draw(img))])
+
+    renderer.useFlatShading = true
+    results.push(["updateScene", control.benchmark(() => updateScene(1, [0, 0, 0]))])
+    results.push(["drawLayer3D (flat)", control.benchmark(() => drawLayer3D(img, null))])
+
+    updateScene(1, [Fx.zeroFx8, Fx.zeroFx8, Fx.zeroFx8])
+    renderer.useFlatShading = false
+    results.push(["drawLayer3D (dithered)", control.benchmark(() => drawLayer3D(img, null))])
+
+    updateScene(1, [Fx.zeroFx8, Fx.zeroFx8, Fx.zeroFx8])
+    renderer.useFlatShading = true
+    Polygon.clipAndDrawPolygon(renderer.xstarts, [[0, 0, 0], [0, 119, 0], [159, 119, 0], [159, 0, 0]], 30, 0)
+    results.push(["drawLayer3D (flat, full BG)", control.benchmark(() => drawLayer3D(img, null))])
+
+    updateScene(1, [Fx.zeroFx8, Fx.zeroFx8, Fx.zeroFx8])
+    renderer.useFlatShading = false
+    Polygon.clipAndDrawPolygon(renderer.xstarts, [[0, 0, 0], [0, 119, 0], [159, 119, 0], [159, 0, 0]], 30, 0)
+    results.push(["drawLayer3D (dithered, full BG)", control.benchmark(() => drawLayer3D(img, null))])
+
+    for (let i = 0; i < results.length; ++i) {
+        const result = results[i]
+        text += result[0] + ": " + result[1] + "\n"
+    }
+    game.showLongText(text, DialogLayout.Full)
+    */
+
+    renderer.useFlatShading = true
+    simpleperf.enable()
+    for (let i = 0; i < 100; ++i) {
+        img.fill(0)
+        starfield.draw(img)
+
+        updateScene(1, [Fx.zeroFx8, Fx.zeroFx8, Fx.zeroFx8])
+        drawLayer3D(img, null)
+    }
+    simpleperf.disableAndShowResults()
+
+    game.popScene()
+}
